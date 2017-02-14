@@ -615,24 +615,6 @@ static void simple_pebs_cpu_reset(void *arg)
 	}
 }
 
-static int simple_pebs_cpu(struct notifier_block *nb, unsigned long action,
-			 void *v)
-{
-	switch (action) {
-	case CPU_STARTING:
-		simple_pebs_cpu_init(NULL);
-		break;
-	case CPU_DYING:
-		simple_pebs_cpu_reset(NULL);
-		break;
-	}
-	return NOTIFY_OK;
-}
-
-static struct notifier_block cpu_notifier = {
-	.notifier_call = simple_pebs_cpu,
-};
-
 static int simple_pebs_init(void)
 {
 	int err;
@@ -646,7 +628,6 @@ static int simple_pebs_init(void)
 
 	get_online_cpus();
 	on_each_cpu(simple_pebs_cpu_init, NULL, 1);
-	register_cpu_notifier(&cpu_notifier);
 	put_online_cpus();
 	if (pebs_error) {
 		pr_err("PEBS initialization failed\n");
@@ -664,7 +645,6 @@ static int simple_pebs_init(void)
 	return 0;
 
 out_notifier:
-	unregister_cpu_notifier(&cpu_notifier);
 	on_each_cpu(simple_pebs_cpu_reset, NULL, 1);
 	simple_pebs_free_vector();       
 	return err;	
@@ -676,7 +656,6 @@ static void simple_pebs_exit(void)
 	misc_deregister(&simple_pebs_miscdev);
 	get_online_cpus();
 	on_each_cpu(simple_pebs_cpu_reset, NULL, 1);
-	unregister_cpu_notifier(&cpu_notifier);
 	put_online_cpus();
 	simple_pebs_free_vector();
 	/* Could PMI still be pending? For now just wait a bit. (XXX) */
