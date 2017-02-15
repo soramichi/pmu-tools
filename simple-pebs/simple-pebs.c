@@ -75,6 +75,8 @@ static unsigned int pebs_buffer_size;
 static unsigned int period;
 static unsigned int pebs_event;
 static int output_mode; // 1: dump to userland, 0: just discard
+static unsigned long n_called;
+static unsigned long n_events;
 
 static void simple_pebs_cpu_init(void *arg);
 static int simple_pebs_get_vector(void);
@@ -462,12 +464,18 @@ asm("    .globl simple_pebs_entry\n"
 #error write me
 #endif
 
+static void print_num_samples(void){
+  printk(KERN_INFO "# of inturrupt: %lu\n", n_called);
+  printk(KERN_INFO "# of events: %lu\n", n_events);
+  printk(KERN_INFO "# of bytes written: %lu\n", n_events * pebs_record_size);
+}
+
 void simple_pebs_pmi(void)
 {
 	struct debug_store *ds;
-	struct pebs_v1 *pebs, *end;
+	struct pebs_v1 *pebs, *start, *end;
 	u64 *outbu, *outbu_end, *outbu_start;
-
+	unsigned long n_events_this_period;
 	status_dump("pmi1");
 
 	/* disable PMU */
@@ -486,6 +494,12 @@ void simple_pebs_pmi(void)
 	outbu = __this_cpu_read(out_buffer);
 	outbu_end = __this_cpu_read(out_buffer_end);
 	end = (struct pebs_v1 *)ds->pebs_index;
+	start = (struct pebs_v1 *)ds->pebs_base;
+
+	/* count: never forget casting to u64 */
+	n_events_this_period = ((u64)end - (u64)start) / pebs_record_size * period;
+	n_events += n_events_this_period;
+	n_called++;
 
 	/* really write */
 	if(output_mode == 1){
@@ -527,6 +541,7 @@ void simple_pebs_pmi(void)
 	 */
 
 	if ((void *)outbu - (void *)outbu_start >= out_buffer_size/2) {
+	  printk(KERN_INFO "out_buffer is not fully drained, wait a bit\n");
 		wake_up(this_cpu_ptr(&simple_pebs_wait));
 	} else
 		wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 1);
@@ -685,6 +700,7 @@ static void simple_pebs_exit(void)
 	simple_pebs_free_vector();
 	/* Could PMI still be pending? For now just wait a bit. (XXX) */
 	schedule_timeout(HZ);
+	print_num_samples();
 	pr_info("Exited\n");
 }
 
