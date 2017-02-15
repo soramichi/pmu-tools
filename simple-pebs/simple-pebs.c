@@ -470,6 +470,11 @@ static void print_num_samples(void){
   printk(KERN_INFO "# of bytes written: %lu\n", n_events * pebs_record_size);
 }
 
+/*
+  Note:
+    this callback is NOT triggered when the counter overflows,
+    but it triggered when pebs_thresh is reached.
+ */
 void simple_pebs_pmi(void)
 {
 	struct debug_store *ds;
