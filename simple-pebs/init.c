@@ -1,21 +1,24 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include "simple-pebs.h"
 
-const unsigned int UOPS_RETIRED_ALL = 0x1C2;
-const unsigned int MEM_LOAD_UOPS_RETIRED_L3_MISS = 0x20D1;
-const unsigned int page_size = 4096;
-
-int main(){
+int main(int argc, char* argv[]){
   int fd, ret;
-  struct simple_pebs_parameter param = {
-    .pebs_event = MEM_LOAD_UOPS_RETIRED_L3_MISS,
-    .reset_value = 100,
-    .buffer_size = (page_size << 8),
-    .output_mode = 0,
+  struct simple_pebs_parameter param;
+
+  if(argc < 5){
+    fprintf(stderr, "usage: %s pebs_event(hex) reset_value buffer_size output_mode\n", argv[0]);
+    return -1;
+  }
+  else{
+    param.pebs_event = strtol(argv[1], NULL, 16);
+    param.reset_value = (unsigned)atoi(argv[2]);
+    param.buffer_size = (unsigned)atoi(argv[3]);
+    param.output_mode = (unsigned)atoi(argv[4]);
   };
   
   fd = open("/dev/simple-pebs", O_RDONLY);
