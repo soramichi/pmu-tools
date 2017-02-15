@@ -75,8 +75,11 @@ static unsigned int pebs_buffer_size;
 static unsigned int period;
 static unsigned int pebs_event;
 static int output_mode; // 1: dump to userland, 0: just discard
-static unsigned long n_called;
-static unsigned long n_events;
+
+static DEFINE_PER_CPU(unsigned long, n_called);
+static DEFINE_PER_CPU(unsigned long, n_events);
+//static unsigned long n_called;
+//static unsigned long n_events;
 
 static void simple_pebs_cpu_init(void *arg);
 static int simple_pebs_get_vector(void);
@@ -464,10 +467,18 @@ asm("    .globl simple_pebs_entry\n"
 #error write me
 #endif
 
-static void print_num_samples(void){
-  printk(KERN_INFO "# of inturrupt: %lu\n", n_called);
-  printk(KERN_INFO "# of events: %lu\n", n_events);
-  printk(KERN_INFO "# of bytes written: %lu\n", n_events * pebs_record_size);
+static void print_num_samples(int n_cpu){
+  int i;
+  unsigned long n_called_tot = 0, n_events_tot = 0;
+
+  for(i=0; i<n_cpu; i++){
+    n_called_tot += per_cpu(n_called, i);
+    n_events_tot += per_cpu(n_events, i);
+  }
+
+  printk(KERN_INFO "# of inturrupt: %lu\n", n_called_tot);
+  printk(KERN_INFO "# of events: %lu\n", n_events_tot);
+  printk(KERN_INFO "# of bytes written: %lu\n", n_events_tot * pebs_record_size);
 }
 
 /*
@@ -481,6 +492,8 @@ void simple_pebs_pmi(void)
 	struct pebs_v1 *pebs, *start, *end;
 	u64 *outbu, *outbu_end, *outbu_start;
 	unsigned long n_events_this_period;
+	unsigned long _n_called = __this_cpu_read(n_called);
+	unsigned long _n_events = __this_cpu_read(n_events);
 	status_dump("pmi1");
 
 	/* disable PMU */
@@ -503,8 +516,8 @@ void simple_pebs_pmi(void)
 
 	/* count: never forget casting to u64 */
 	n_events_this_period = ((u64)end - (u64)start) / pebs_record_size * period;
-	n_events += n_events_this_period;
-	n_called++;
+	__this_cpu_write(n_events, _n_events + n_events_this_period);
+	__this_cpu_write(n_called, _n_called + 1);
 
 	/* really write */
 	if(output_mode == 1){
@@ -705,7 +718,7 @@ static void simple_pebs_exit(void)
 	simple_pebs_free_vector();
 	/* Could PMI still be pending? For now just wait a bit. (XXX) */
 	schedule_timeout(HZ);
-	print_num_samples();
+	print_num_samples(18);
 	pr_info("Exited\n");
 }
 
