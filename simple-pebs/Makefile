@@ -1,9 +1,9 @@
 USER_CFLAGS := -g -Wall -std=c89
 KDIR = /lib/modules/`uname -r`/build
 
-USER_EXE := dumper samples histogram toperf
+USER_EXE := dumper samples histogram toperf init
 USER_OBJ := dumper.o dump-util.o elf.o symtab.o samples.o map.o \
-	    histogram.o toperf.o
+	    histogram.o toperf.o init.o
 
 obj-m := simple-pebs.o
 M := make -C ${KDIR} M=`pwd`
@@ -30,3 +30,5 @@ histogram: LDLIBS := -lelf
 histogram: histogram.o elf.o symtab.o map.o
 
 toperf: toperf.o map.o
+
+init: init.o

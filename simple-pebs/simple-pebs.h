@@ -5,3 +5,10 @@
 #define SIMPLE_PEBS_START	(SIMPLE_PEBS_BASE + 4)
 #define SIMPLE_PEBS_STOP	(SIMPLE_PEBS_BASE + 5)
 #define SIMPLE_PEBS_RESET	(SIMPLE_PEBS_BASE + 6)
+#define SIMPLE_PEBS_INIT	(SIMPLE_PEBS_BASE + 7)
+
+struct simple_pebs_parameter {
+  unsigned int pebs_event;
+  unsigned int reset_value;
+  unsigned int buffer_size;
+};

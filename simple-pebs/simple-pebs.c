@@ -70,11 +70,14 @@
 #define EVTSEL_INT BIT(20)
 #define EVTSEL_EN  BIT(22)
 
-#define PEBS_BUFFER_SIZE	(64 * 1024) /* PEBS buffer size */
-#define OUT_BUFFER_SIZE		(64 * 1024) /* must be multiple of 4k */
-#define PERIOD 100003
+static unsigned int out_buffer_size;
+static unsigned int pebs_buffer_size;
+static unsigned int period;
+static unsigned int pebs_event;
 
-static unsigned pebs_event; 
+static void simple_pebs_cpu_init(void *arg);
+static int simple_pebs_get_vector(void);
+
 
 static volatile int pebs_error;
 
@@ -143,21 +146,15 @@ static bool check_cpu(void)
 		pr_err("Not an supported Intel CPU\n");
 		return false;
 	}
-	
 	switch (model) { 
 	case 58: /* IvyBridge */
 	case 63: /* Haswell_EP */
 	case 69: /* Haswell_ULT */
 	case 94: /* Skylake */
-		pebs_event = 0x1c2; /* UOPS_RETIRED.ALL */
-		break;
-
 	case 55: /* Bay Trail */
 	case 76: /* Airmont */
 	case 77: /* Avoton */
-		pebs_event = 0x0c5; /* BR_MISP_RETIRED.ALL_BRANCHES */
 		break;
-
 	default:
 		pr_err("Unknown CPU model %d\n", model);
 		return false;
@@ -222,7 +219,7 @@ static int simple_pebs_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long len = vma->vm_end - vma->vm_start;
 	int cpu = (int)(long)file->private_data;
 
-	if (len % PAGE_SIZE || len != OUT_BUFFER_SIZE || vma->vm_pgoff)
+	if (len % PAGE_SIZE || len != out_buffer_size || vma->vm_pgoff)
 		return -EINVAL;
 
 	if (vma->vm_flags & VM_WRITE)
@@ -233,7 +230,7 @@ static int simple_pebs_mmap(struct file *file, struct vm_area_struct *vma)
 
 	return remap_pfn_range(vma, vma->vm_start,
 			       __pa(per_cpu(out_buffer_base, cpu)) >> PAGE_SHIFT,
-			       OUT_BUFFER_SIZE,
+			       out_buffer_size,
 			       vma->vm_page_prot);
 }
 
@@ -277,8 +274,32 @@ static long simple_pebs_ioctl(struct file *file, unsigned int cmd,
 			      unsigned long arg)
 {
 	unsigned long cpu = (unsigned long)file->private_data;
+	int err;
+	struct simple_pebs_parameter param;
 
 	switch (cmd) {
+	case SIMPLE_PEBS_INIT:
+	  err = copy_from_user(&param, (char*)arg, sizeof(param));
+	  pebs_event = param.pebs_event;
+	  pebs_buffer_size = param.buffer_size;
+	  out_buffer_size = param.buffer_size;
+	  period = param.reset_value;
+
+	  printk(KERN_INFO "pebs_event: %x\n", pebs_event);
+	  printk(KERN_INFO "buffer_size: %x\n", out_buffer_size);
+	  printk(KERN_INFO "reset_value: %x\n", period);
+
+	  // register pmi vector
+	  err = simple_pebs_get_vector();
+	  if (err < 0)
+	    return -EIO;
+
+	  get_online_cpus();
+
+	  on_each_cpu(simple_pebs_cpu_init, NULL, 1);
+
+	  put_online_cpus();
+	  return 0;
 	case SIMPLE_PEBS_SET_CPU:
 		cpu = arg;
 		if (cpu >= NR_CPUS || !cpu_online(cpu))
@@ -286,7 +307,7 @@ static long simple_pebs_ioctl(struct file *file, unsigned int cmd,
 		file->private_data = (void *)cpu;
 		return 0;
 	case SIMPLE_PEBS_GET_SIZE:
-		return put_user(OUT_BUFFER_SIZE, (int *)arg);
+		return put_user(out_buffer_size, (int *)arg);
 	case SIMPLE_PEBS_GET_OFFSET: {
 		unsigned len = per_cpu(out_buffer, cpu) - per_cpu(out_buffer_base, cpu);
 		return put_user(len, (unsigned *)arg);
@@ -351,18 +372,18 @@ static int allocate_buffer(void)
 	}
 	memset(ds, 0, sizeof(struct debug_store));
 	/* Set up buffer */
-	ds->pebs_base = (unsigned long)kmalloc(PEBS_BUFFER_SIZE, GFP_KERNEL);
+	ds->pebs_base = (unsigned long)kmalloc(pebs_buffer_size, GFP_KERNEL);
 	if (!ds->pebs_base) {
 		pr_err("Cannot allocate PEBS buffer\n");
 		kfree(ds);
 		return -1;
 	}
-	memset((void *)ds->pebs_base, 0, PEBS_BUFFER_SIZE);
-	num_pebs = PEBS_BUFFER_SIZE / pebs_record_size;
+	memset((void *)ds->pebs_base, 0, pebs_buffer_size);
+	num_pebs = pebs_buffer_size / pebs_record_size;
 	ds->pebs_index = ds->pebs_base;
 	ds->pebs_max = ds->pebs_base + (num_pebs - 1) * pebs_record_size + 1;
 	ds->pebs_thresh = ds->pebs_base + (num_pebs - num_pebs/10) * pebs_record_size ;
-	ds->pebs_reset[0] = -(long long)PERIOD;
+	ds->pebs_reset[0] = -(long long)period;
 	__this_cpu_write(cpu_ds, ds);
 
 	status_dump("allocate_buffer");
@@ -373,14 +394,14 @@ static int allocate_out_buf(void)
 {
 	void *outbu_base;
 
-	outbu_base = kmalloc(OUT_BUFFER_SIZE, GFP_KERNEL);
+	outbu_base = kmalloc(out_buffer_size, GFP_KERNEL);
 	if (!outbu_base) {
 		pr_err("Cannot allocate out buffer\n");
 		return -1;
 	}
 	__this_cpu_write(out_buffer_base, outbu_base);
 	__this_cpu_write(out_buffer, outbu_base);
-	__this_cpu_write(out_buffer_end, outbu_base + OUT_BUFFER_SIZE);
+	__this_cpu_write(out_buffer_end, outbu_base + out_buffer_size);
 	return 0;
 }
 
@@ -452,7 +473,7 @@ void simple_pebs_pmi(void)
 	/* global status ack */
 	wrmsrl(MSR_IA32_PERF_GLOBAL_OVF_CTRL, 1ULL << 62);
 
-	wrmsrl(MSR_IA32_PERFCTR0, -PERIOD); /* ? sign extension on width ? */
+	wrmsrl(MSR_IA32_PERFCTR0, -period); /* ? sign extension on width ? */
 
 	status_dump("pmi2");
 
@@ -494,7 +515,7 @@ void simple_pebs_pmi(void)
 	 * fifo
 	 */
 
-	if ((void *)outbu - (void *)outbu_start >= OUT_BUFFER_SIZE/2) {
+	if ((void *)outbu - (void *)outbu_start >= out_buffer_size/2) {
 		wake_up(this_cpu_ptr(&simple_pebs_wait));
 	} else
 		wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 1);
@@ -581,7 +602,7 @@ static void simple_pebs_cpu_init(void *arg)
 	/* First disable PMU to avoid races */
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 0);
 
-	wrmsrl(MSR_IA32_PERFCTR0, -PERIOD); /* ? sign extension on width ? */
+	wrmsrl(MSR_IA32_PERFCTR0, -period); /* ? sign extension on width ? */
 	wrmsrl(MSR_IA32_EVNTSEL0,
 		pebs_event | EVTSEL_EN | EVTSEL_USR | EVTSEL_OS);
 
@@ -622,13 +643,6 @@ static int simple_pebs_init(void)
 	if (!check_cpu())
 		return -EIO;
 
-	err = simple_pebs_get_vector();
-	if (err < 0)
-		return -EIO;
-
-	get_online_cpus();
-	on_each_cpu(simple_pebs_cpu_init, NULL, 1);
-	put_online_cpus();
 	if (pebs_error) {
 		pr_err("PEBS initialization failed\n");
 		err = -EIO;
@@ -666,4 +680,3 @@ static void simple_pebs_exit(void)
 module_exit(simple_pebs_exit)
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Andi Kleen");
-
