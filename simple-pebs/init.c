@@ -11,6 +11,7 @@ int main(){
     .pebs_event = 0x20D1,
     .reset_value = 0x64,
     .buffer_size = 64 * 1024
+    .output_mode = 0,
   };
   
   fd = open("/dev/simple-pebs", O_RDONLY);

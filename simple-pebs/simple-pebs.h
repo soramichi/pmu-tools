@@ -11,4 +11,5 @@ struct simple_pebs_parameter {
   unsigned int pebs_event;
   unsigned int reset_value;
   unsigned int buffer_size;
+  int output_mode;
 };

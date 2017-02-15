@@ -74,6 +74,7 @@ static unsigned int out_buffer_size;
 static unsigned int pebs_buffer_size;
 static unsigned int period;
 static unsigned int pebs_event;
+static int output_mode; // 1: dump to userland, 0: just discard
 
 static void simple_pebs_cpu_init(void *arg);
 static int simple_pebs_get_vector(void);
@@ -284,10 +285,12 @@ static long simple_pebs_ioctl(struct file *file, unsigned int cmd,
 	  pebs_buffer_size = param.buffer_size;
 	  out_buffer_size = param.buffer_size;
 	  period = param.reset_value;
+	  output_mode = param.output_mode;
 
 	  printk(KERN_INFO "pebs_event: %x\n", pebs_event);
 	  printk(KERN_INFO "buffer_size: %x\n", out_buffer_size);
-	  printk(KERN_INFO "reset_value: %x\n", period);
+	  printk(KERN_INFO "reset_value: %d\n", period);
+	  printk(KERN_INFO "output_mode: %d\n", output_mode);
 
 	  // register pmi vector
 	  err = simple_pebs_get_vector();
@@ -476,22 +479,30 @@ void simple_pebs_pmi(void)
 	wrmsrl(MSR_IA32_PERFCTR0, -period); /* ? sign extension on width ? */
 
 	status_dump("pmi2");
-
+	
 	/* write data to buffer */
 	ds = __this_cpu_read(cpu_ds);
 	outbu_start = __this_cpu_read(out_buffer_base);
 	outbu = __this_cpu_read(out_buffer);
 	outbu_end = __this_cpu_read(out_buffer_end);
 	end = (struct pebs_v1 *)ds->pebs_index;
-	for (pebs = (struct pebs_v1 *)ds->pebs_base;
-	     pebs < end && outbu < outbu_end;
-	     pebs = (struct pebs_v1 *)((char *)pebs + pebs_record_size)) {
-		uint64_t ip = pebs->ip;
-		if (pebs_record_size >= sizeof(struct pebs_v2))
-			ip = ((struct pebs_v2 *)pebs)->eventing_ip;
-		*outbu++ = ip;
+
+	/* really write */
+	if(output_mode == 1){
+	  for (pebs = (struct pebs_v1 *)ds->pebs_base;
+	       pebs < end && outbu < outbu_end;
+	       pebs = (struct pebs_v1 *)((char *)pebs + pebs_record_size)) {
+	    uint64_t ip = pebs->ip;
+	    if (pebs_record_size >= sizeof(struct pebs_v2))
+	      ip = ((struct pebs_v2 *)pebs)->eventing_ip;
+	    *outbu++ = ip;
+	  }
+	  this_cpu_write(out_buffer, outbu);
 	}
-	this_cpu_write(out_buffer, outbu);
+	/* no output mode,  do nothing and just discard the data */
+	else{
+	  ;
+	}
 
 #if 0
 	pr_debug("%d: pmi %llx out %lx max %llx counter %llx num %llu\n",
