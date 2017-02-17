@@ -476,9 +476,12 @@ static void print_num_samples(int n_cpu){
     n_events_tot += per_cpu(n_events, i);
   }
 
+  /*
+    Note: n_events_tot is the total number of conted events, which is `period' times larger than pebs assist
+   */
   printk(KERN_INFO "# of inturrupt: %lu\n", n_called_tot);
   printk(KERN_INFO "# of events: %lu\n", n_events_tot);
-  printk(KERN_INFO "# of bytes written: %lu\n", n_events_tot * pebs_record_size);
+  printk(KERN_INFO "# of bytes written: %lu\n", n_events_tot * pebs_record_size / period);
 }
 
 /*
