@@ -56,7 +56,9 @@
 #include "simple-pebs.h"
 
 #define MSR_IA32_PERFCTR0    		0x000000c1
+#define MSR_IA32_PERFCTR1    		0x000000c2
 #define MSR_IA32_EVNTSEL0    		0x00000186
+#define MSR_IA32_EVNTSEL1    		0x00000187
 
 #define MSR_IA32_PERF_CABABILITIES  	0x00000345
 #define MSR_IA32_PERF_GLOBAL_STATUS 	0x0000038e
@@ -69,15 +71,24 @@
 #define EVTSEL_OS  BIT(17)
 #define EVTSEL_INT BIT(20)
 #define EVTSEL_EN  BIT(22)
+#define EN_PMC0 BIT(0)
+#define EN_PMC1 BIT(1)
+#define OVF_PMC0 BIT(0) // not used, overflow is not enabled to PMC0 (pebs counter)
+#define OVF_PMC1 BIT(1)
+#define OVF_BUF BIT(62)
 
 static unsigned int out_buffer_size;
 static unsigned int pebs_buffer_size;
-static unsigned int period;
+static unsigned int period_pebs;
+static unsigned int period_normal;
 static unsigned int pebs_event;
+static unsigned int normal_event;
 static int output_mode; // 1: dump to userland, 0: just discard
 
-static DEFINE_PER_CPU(unsigned long, n_called);
+static DEFINE_PER_CPU(unsigned long, n_called_pebs);
+static DEFINE_PER_CPU(unsigned long, n_called_normal);
 static DEFINE_PER_CPU(unsigned long, n_events);
+static DEFINE_PER_CPU(unsigned long, n_pmc1_overflow);
 //static unsigned long n_called;
 //static unsigned long n_events;
 
@@ -263,15 +274,17 @@ static void status_dump(char *where)
 
 static void start_stop_cpu(void *arg)
 {
-	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, arg ? 1 : 0);
+        unsigned int enable = EN_PMC0 | EN_PMC1;
+	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, arg ? enable : 0);
 	status_dump("stop");
 }	
 
 static void reset_buffer_cpu(void *arg)
 {
+        unsigned int enable = EN_PMC0 | EN_PMC1;
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 0);
 	__this_cpu_write(out_buffer, __this_cpu_read(out_buffer_base));
-	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 1);
+	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, enable);
 }
 
 static DEFINE_MUTEX(reset_mutex);
@@ -286,17 +299,30 @@ static long simple_pebs_ioctl(struct file *file, unsigned int cmd,
 	switch (cmd) {
 	case SIMPLE_PEBS_INIT:
 	  err = copy_from_user(&param, (char*)arg, sizeof(param));
+	  /* PMC0, pebs event */
 	  pebs_event = param.pebs_event;
 	  pebs_buffer_size = param.buffer_size;
 	  out_buffer_size = param.buffer_size;
-	  period = param.reset_value;
+	  period_pebs = param.reset_value_pebs;
 	  output_mode = param.output_mode;
 
-	  printk(KERN_INFO "pebs_event: %x\n", pebs_event);
-	  printk(KERN_INFO "buffer_size: %x\n", out_buffer_size);
-	  printk(KERN_INFO "reset_value: %d\n", period);
-	  printk(KERN_INFO "output_mode: %d\n", output_mode);
+	  printk(KERN_INFO "[PMC0 (PEBS counter)]\n");
+	  printk(KERN_INFO "  pebs_event: %x\n", pebs_event);
+	  printk(KERN_INFO "  buffer_size: %x\n", out_buffer_size);
+	  printk(KERN_INFO "  reset_value: %d\n", period_pebs);
+	  printk(KERN_INFO "  output_mode: %d\n", output_mode);
 
+	  /* PMC1, normal (non-pebs) event */
+	  normal_event = param.normal_event;
+	  period_normal = param.reset_value_normal;
+
+	  if(normal_event != 0){
+	    printk(KERN_INFO "[PMC1 (Normal non-PEBS counter)]\n");
+	    printk(KERN_INFO "  normal_event: %x\n", normal_event);
+	    printk(KERN_INFO "  reset_value: %d\n", period_normal);
+	  }
+
+	  
 	  // register pmi vector
 	  err = simple_pebs_get_vector();
 	  if (err < 0)
@@ -391,7 +417,7 @@ static int allocate_buffer(void)
 	ds->pebs_index = ds->pebs_base;
 	ds->pebs_max = ds->pebs_base + (num_pebs - 1) * pebs_record_size + 1;
 	ds->pebs_thresh = ds->pebs_base + (num_pebs - num_pebs/10) * pebs_record_size ;
-	ds->pebs_reset[0] = -(long long)period;
+	ds->pebs_reset[0] = -(long long)period_pebs;
 	__this_cpu_write(cpu_ds, ds);
 
 	status_dump("allocate_buffer");
@@ -469,19 +495,29 @@ asm("    .globl simple_pebs_entry\n"
 
 static void print_num_samples(int n_cpu){
   int i;
-  unsigned long n_called_tot = 0, n_events_tot = 0;
-
+  unsigned long n_called_pebs_tot = 0, n_called_normal_tot = 0;  
+  unsigned long n_events_tot = 0; /* pebs */
+  unsigned long n_pmc1_overflow_tot = 0;
+  
   for(i=0; i<n_cpu; i++){
-    n_called_tot += per_cpu(n_called, i);
+    n_called_pebs_tot += per_cpu(n_called_pebs, i);
+    n_called_normal_tot += per_cpu(n_called_normal, i);
     n_events_tot += per_cpu(n_events, i);
+    n_pmc1_overflow_tot += __this_cpu_read(n_pmc1_overflow);
   }
 
   /*
     Note: n_events_tot is the total number of conted events, which is `period' times larger than pebs assist
    */
-  printk(KERN_INFO "# of inturrupt: %lu\n", n_called_tot);
-  printk(KERN_INFO "# of events: %lu\n", n_events_tot);
-  printk(KERN_INFO "# of bytes written: %lu\n", n_events_tot * pebs_record_size / period);
+  printk(KERN_INFO "[PMC0 (PEBS counter) Stats]\n");
+  printk(KERN_INFO "  # of DS overflow inturrupt: %lu\n", n_called_pebs_tot);
+  printk(KERN_INFO "  # of events: %lu\n", n_events_tot);
+  printk(KERN_INFO "  # of bytes written: %lu\n", n_events_tot * pebs_record_size / period_pebs);
+
+  printk(KERN_INFO "[PMC1 (Normal counter) Stats]\n");
+  printk(KERN_INFO "  # of PMC1 overflow inturrupt: %lu\n", n_called_normal_tot);
+  printk(KERN_INFO "  # of events: %lu\n", n_pmc1_overflow_tot * period_normal);
+  printk(KERN_INFO "  # of bytes written: always 0 for non-pebs counters\n");
 }
 
 /*
@@ -494,20 +530,38 @@ void simple_pebs_pmi(void)
 	struct debug_store *ds;
 	struct pebs_v1 *pebs, *start, *end;
 	u64 *outbu, *outbu_end, *outbu_start;
+	unsigned long perf_global_status = 0;
 	unsigned long n_events_this_period;
-	unsigned long _n_called = __this_cpu_read(n_called);
+	unsigned long _n_called_pebs = __this_cpu_read(n_called_pebs);
+	unsigned long _n_called_normal = __this_cpu_read(n_called_normal);
 	unsigned long _n_events = __this_cpu_read(n_events);
+	unsigned long _n_pmc1_overflow = __this_cpu_read(n_pmc1_overflow);
+	int interrupt_pebs = 0;
 	status_dump("pmi1");
 
 	/* disable PMU */
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 0);
 
+	/* check the cause of this interrupt */
+	rdmsrl(MSR_IA32_PERF_GLOBAL_STATUS, perf_global_status);
+
+	//printk("PERF_GLOBAL_STATUS: %lx\n", perf_global_status);
+	
+	/* Processing counter 1, a normal (non-PEBS) counter */
+	if(perf_global_status & OVF_PMC1){
+	  wrmsrl(MSR_IA32_PERF_GLOBAL_OVF_CTRL, OVF_PMC1);
+	  wrmsrl(MSR_IA32_PERFCTR1, -period_normal); /* ? sign extension on width ? */
+	  __this_cpu_write(n_pmc1_overflow, _n_pmc1_overflow + 1);
+	  __this_cpu_write(n_called_normal, _n_called_normal + 1);
+	  goto enable;
+	}
+
+	/* Processing counter 0, a PEBS counter*/
 	/* global status ack */
-	wrmsrl(MSR_IA32_PERF_GLOBAL_OVF_CTRL, 1ULL << 62);
+	wrmsrl(MSR_IA32_PERF_GLOBAL_OVF_CTRL, OVF_BUF);
 
-	wrmsrl(MSR_IA32_PERFCTR0, -period); /* ? sign extension on width ? */
-
-	status_dump("pmi2");
+	interrupt_pebs = 1;
+	wrmsrl(MSR_IA32_PERFCTR0, -period_pebs); /* ? sign extension on width ? */
 	
 	/* write data to buffer */
 	ds = __this_cpu_read(cpu_ds);
@@ -518,9 +572,9 @@ void simple_pebs_pmi(void)
 	start = (struct pebs_v1 *)ds->pebs_base;
 
 	/* count: never forget casting to u64 */
-	n_events_this_period = ((u64)end - (u64)start) / pebs_record_size * period;
+	n_events_this_period = ((u64)end - (u64)start) / pebs_record_size * period_pebs;
 	__this_cpu_write(n_events, _n_events + n_events_this_period);
-	__this_cpu_write(n_called, _n_called + 1);
+	__this_cpu_write(n_called_pebs, _n_called_pebs + 1);
 
 	/* really write */
 	if(output_mode == 1){
@@ -548,10 +602,11 @@ void simple_pebs_pmi(void)
 		 __builtin_ia32_rdpmc(0),
 		 (ds->pebs_index - ds->pebs_base) / pebs_record_size);
 #endif
-
+	
 	/* reset ds */
 	ds->pebs_index = ds->pebs_base;
 
+ enable:;
 	/* ack apic */
 	apic_eoi();
 	/* Unmask PMI as, as it got implicitely masked. */
@@ -560,14 +615,13 @@ void simple_pebs_pmi(void)
 	/* Don't enable for now until the buffer is flushed as we need a real
 	 * fifo
 	 */
-
-	if ((void *)outbu - (void *)outbu_start >= out_buffer_size/2) {
-	  printk(KERN_INFO "out_buffer is not fully drained, wait a bit\n");
+	if (interrupt_pebs && (void *)outbu - (void *)outbu_start >= out_buffer_size/2) {
+	        printk(KERN_INFO "out_buffer is not fully drained, wait a bit\n");
 		wake_up(this_cpu_ptr(&simple_pebs_wait));
-	} else
-		wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 1);
+		return;
+	}
 
-	status_dump("pmi3");
+	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, EN_PMC0 | EN_PMC1);
 }
 
 /* Get vector */
@@ -643,20 +697,34 @@ static void simple_pebs_cpu_init(void *arg)
 	/* Set up LVT */
 	__this_cpu_write(old_lvtpc, apic_read(APIC_LVTPC));
 	apic_write(APIC_LVTPC, pebs_vector);
-
+	
 	/* Initialize PMU */
-
+	
 	/* First disable PMU to avoid races */
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 0);
 
-	wrmsrl(MSR_IA32_PERFCTR0, -period); /* ? sign extension on width ? */
+	/* Set up normal (non-pebs) counter for counter 1, if any */
+	if(normal_event != 0){
+	  /*
+	    Note 1: EVNTSEL1 must be enabled before EVNTSEL0??
+	    Note 2: EVTSEL_INT is set for EVNTSEL1 as we want an iterrupt
+	    at each counter overflow for PMC1
+	  */
+	  wrmsrl(MSR_IA32_EVNTSEL1,
+		 normal_event | EVTSEL_EN | EVTSEL_USR | EVTSEL_OS | EVTSEL_INT);
+	  wrmsrl(MSR_IA32_PERFCTR1, -period_normal); /* ? sign extension on width ? */
+	}
+	
+	wrmsrl(MSR_IA32_PERFCTR0, -period_pebs); /* ? sign extension on width ? */
 	wrmsrl(MSR_IA32_EVNTSEL0,
 		pebs_event | EVTSEL_EN | EVTSEL_USR | EVTSEL_OS);
 
 	/* Enable PEBS for counter 0 */
 	wrmsrl(MSR_IA32_PEBS_ENABLE, 1);
 
-	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 1);
+	/* Enable PMC for counter 0 and counter 1 */
+	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, EN_PMC0 | EN_PMC1);
+
 	__this_cpu_write(cpu_initialized, 1);
 }
 
@@ -667,6 +735,8 @@ static void simple_pebs_cpu_reset(void *arg)
 		wrmsrl(MSR_IA32_PEBS_ENABLE, 0);
 		wrmsrl(MSR_IA32_EVNTSEL0, 0);
 		wrmsrl(MSR_IA32_PERFCTR0, 0);
+		wrmsrl(MSR_IA32_EVNTSEL1, 0);
+		wrmsrl(MSR_IA32_PERFCTR1, 0);
 		wrmsrl(MSR_IA32_DS_AREA, __this_cpu_read(cpu_old_ds));
 		apic_write(APIC_LVTPC, __this_cpu_read(old_lvtpc));
 		__this_cpu_write(cpu_initialized, 0);
