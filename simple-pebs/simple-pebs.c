@@ -89,6 +89,8 @@ static DEFINE_PER_CPU(unsigned long, n_called_pebs);
 static DEFINE_PER_CPU(unsigned long, n_called_normal);
 static DEFINE_PER_CPU(unsigned long, n_events);
 static DEFINE_PER_CPU(unsigned long, n_pmc1_overflow);
+static DEFINE_PER_CPU(unsigned long long, cycles_spent_int_pebs);
+static DEFINE_PER_CPU(unsigned long long, cycles_spent_int_normal);
 //static unsigned long n_called;
 //static unsigned long n_events;
 
@@ -498,12 +500,15 @@ static void print_num_samples(int n_cpu){
   unsigned long n_called_pebs_tot = 0, n_called_normal_tot = 0;  
   unsigned long n_events_tot = 0; /* pebs */
   unsigned long n_pmc1_overflow_tot = 0;
+  unsigned long long cycles_spent_int_pebs_tot = 0, cycles_spent_int_normal_tot = 0;
   
   for(i=0; i<n_cpu; i++){
     n_called_pebs_tot += per_cpu(n_called_pebs, i);
     n_called_normal_tot += per_cpu(n_called_normal, i);
     n_events_tot += per_cpu(n_events, i);
     n_pmc1_overflow_tot += __this_cpu_read(n_pmc1_overflow);
+    cycles_spent_int_pebs_tot += __this_cpu_read(cycles_spent_int_pebs);
+    cycles_spent_int_normal_tot += __this_cpu_read(cycles_spent_int_normal);
   }
 
   /*
@@ -513,11 +518,13 @@ static void print_num_samples(int n_cpu){
   printk(KERN_INFO "  # of DS overflow inturrupt: %lu\n", n_called_pebs_tot);
   printk(KERN_INFO "  # of events: %lu\n", n_events_tot);
   printk(KERN_INFO "  # of bytes written: %lu\n", n_events_tot * pebs_record_size / period_pebs);
+  printk(KERN_INFO "  Cycles spent for DS overflow interrupt: %llu\n", cycles_spent_int_pebs_tot);
 
   printk(KERN_INFO "[PMC1 (Normal counter) Stats]\n");
   printk(KERN_INFO "  # of PMC1 overflow inturrupt: %lu\n", n_called_normal_tot);
   printk(KERN_INFO "  # of events: %lu\n", n_pmc1_overflow_tot * period_normal);
   printk(KERN_INFO "  # of bytes written: always 0 for non-pebs counters\n");
+  printk(KERN_INFO "  Cycles spent for PMC1 overflow interrupt: %llu\n", cycles_spent_int_normal_tot);
 }
 
 /*
@@ -537,8 +544,11 @@ void simple_pebs_pmi(void)
 	unsigned long _n_events = __this_cpu_read(n_events);
 	unsigned long _n_pmc1_overflow = __this_cpu_read(n_pmc1_overflow);
 	int interrupt_pebs = 0;
+	unsigned long long tsc_start, tsc_finish;
 	status_dump("pmi1");
 
+	tsc_start = rdtsc();
+	
 	/* disable PMU */
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 0);
 
@@ -612,6 +622,17 @@ void simple_pebs_pmi(void)
 	/* Unmask PMI as, as it got implicitely masked. */
 	apic_write(APIC_LVTPC, pebs_vector);
 
+	tsc_finish = rdtsc();
+
+	if(interrupt_pebs) {
+	  unsigned long long _cycles_spent_int_pebs = __this_cpu_read(cycles_spent_int_pebs);
+	  __this_cpu_write(cycles_spent_int_pebs, _cycles_spent_int_pebs + (tsc_finish - tsc_start));
+	}
+	else {
+	  unsigned long long _cycles_spent_int_normal = __this_cpu_read(cycles_spent_int_normal);
+	  __this_cpu_write(cycles_spent_int_normal, _cycles_spent_int_normal + (tsc_finish - tsc_start));
+	}
+	
 	/* Don't enable for now until the buffer is flushed as we need a real
 	 * fifo
 	 */
