@@ -8,8 +8,13 @@
 #define SIMPLE_PEBS_INIT	(SIMPLE_PEBS_BASE + 7)
 
 struct simple_pebs_parameter {
+  /* PMC0, pebs event */
   unsigned int pebs_event;
-  unsigned int reset_value;
+  unsigned int reset_value_pebs;
   unsigned int buffer_size;
   int output_mode;
+
+  /* PMC1, normal (non-pebs) event */
+  unsigned int normal_event;
+  unsigned int reset_value_normal;
 };

@@ -16,11 +16,15 @@ int main(int argc, char* argv[]){
   }
   else{
     param.pebs_event = strtol(argv[1], NULL, 16);
-    param.reset_value = (unsigned)atoi(argv[2]);
+    param.reset_value_pebs = (unsigned)atoi(argv[2]);
     param.buffer_size = (unsigned)atoi(argv[3]);
     param.output_mode = (unsigned)atoi(argv[4]);
   };
-  
+
+  /* hard code */
+  param.normal_event = 0x412E;
+  param.reset_value_normal = 100000;
+
   fd = open("/dev/simple-pebs", O_RDONLY);
   
   if (fd < 0){
