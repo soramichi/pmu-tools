@@ -547,7 +547,7 @@ void simple_pebs_pmi(void)
 	unsigned long long tsc_start, tsc_finish;
 	status_dump("pmi1");
 
-	tsc_start = rdtsc();
+	rdtscll(tsc_start);
 	
 	/* disable PMU */
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, 0);
@@ -622,7 +622,7 @@ void simple_pebs_pmi(void)
 	/* Unmask PMI as, as it got implicitely masked. */
 	apic_write(APIC_LVTPC, pebs_vector);
 
-	tsc_finish = rdtsc();
+	rdtscll(tsc_finish);
 
 	if(interrupt_pebs) {
 	  unsigned long long _cycles_spent_int_pebs = __this_cpu_read(cycles_spent_int_pebs);
