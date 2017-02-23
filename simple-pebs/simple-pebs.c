@@ -506,9 +506,9 @@ static void print_num_samples(int n_cpu){
     n_called_pebs_tot += per_cpu(n_called_pebs, i);
     n_called_normal_tot += per_cpu(n_called_normal, i);
     n_events_tot += per_cpu(n_events, i);
-    n_pmc1_overflow_tot += __this_cpu_read(n_pmc1_overflow);
-    cycles_spent_int_pebs_tot += __this_cpu_read(cycles_spent_int_pebs);
-    cycles_spent_int_normal_tot += __this_cpu_read(cycles_spent_int_normal);
+    n_pmc1_overflow_tot += per_cpu(n_pmc1_overflow, i);
+    cycles_spent_int_pebs_tot += per_cpu(cycles_spent_int_pebs, i);
+    cycles_spent_int_normal_tot += per_cpu(cycles_spent_int_normal, i);
   }
 
   /*
@@ -617,11 +617,6 @@ void simple_pebs_pmi(void)
 	ds->pebs_index = ds->pebs_base;
 
  enable:;
-	/* ack apic */
-	apic_eoi();
-	/* Unmask PMI as, as it got implicitely masked. */
-	apic_write(APIC_LVTPC, pebs_vector);
-
 	rdtscll(tsc_finish);
 
 	if(interrupt_pebs) {
@@ -643,6 +638,11 @@ void simple_pebs_pmi(void)
 	}
 
 	wrmsrl(MSR_IA32_PERF_GLOBAL_CTRL, EN_PMC0 | EN_PMC1);
+
+	/* ack apic */
+	apic_eoi();
+	/* Unmask PMI as, as it got implicitely masked. */
+	apic_write(APIC_LVTPC, pebs_vector);
 }
 
 /* Get vector */
