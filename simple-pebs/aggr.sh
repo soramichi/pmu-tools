@@ -31,12 +31,13 @@ for b in $BUFFER_SIZES; do
 
 	    cache_misses_i=`grep "# of PMC1 overflow" -A 1 ${r}.dmesg | tail -n 1 | sed -e "s/.*# of events: \([0-9]*\)/\1/"`
 	    cache_misses=`echo $cache_misses + $cache_misses_i | bc`
-	    
+
 	    cd $PWD_OLD
 	done
 
 	elapsed_time=`echo $elapsed_time / 3 | bc -l`
 	ds_overflow=`echo $ds_overflow / 3 | bc`
+	pebs_events=`echo $pebs_events / 3 | bc`
 	pmc1_overflow=`echo $pmc1_overflow / 3 | bc`
 	cache_misses=`echo $cache_misses / 3 | bc`
 
