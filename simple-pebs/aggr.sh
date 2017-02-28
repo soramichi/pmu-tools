@@ -1,5 +1,6 @@
 RESET_VALUES="1500 1400 1300 1200 1100 1000 900"
 BUFFER_SIZES="4194304 1048576 262144 65536"
+SPEC=1
 
 PWD_OLD=`pwd`
 
@@ -16,8 +17,11 @@ for b in $BUFFER_SIZES; do
 	for i in 1 2 3; do
 	    cd ${b}/${i}
 
-	    #elapsed_time_i=`grep "Elapsed time" ${r}.log | sed -e "s/Elapsed time://"`
-	    elapsed_time_i=`grep "Time in seconds" ${r}.log | sed -e "s/Time in seconds =//"`
+	    if [ "$SPEC" == "1" ]; then
+		elapsed_time_i=`cat ${r}.log | grep csv | sed -e "s/.*\->\(.*\)/\1/" | xargs grep -h "train iteration #1" | cut -d ',' -f 3`
+	    else
+		elapsed_time_i=`grep "Elapsed time" ${r}.log | sed -e "s/Elapsed time://"`
+	    fi
 	    elapsed_time=`echo $elapsed_time + $elapsed_time_i | bc -l`
 
 	    ds_overflow_i=`grep "# of DS overflow" ${r}.dmesg | sed -e "s/.*# of DS overflow inturrupt: \([0-9]*\)/\1/"`
