@@ -173,6 +173,7 @@ static bool check_cpu(void)
 	case 55: /* Bay Trail */
 	case 76: /* Airmont */
 	case 77: /* Avoton */
+	case 79: /* Broadwell_EP */
 		break;
 	default:
 		pr_err("Unknown CPU model %d\n", model);
